@@ -38,6 +38,7 @@ set(formats_compchem
       pointcloudformat
       pwscfformat
       qchemformat
+      siestaformat
       turbomoleformat
       vaspformat
       zindoformat
