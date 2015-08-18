@@ -81,6 +81,7 @@ namespace OpenBabel {
     bool coordsAreAngstrom = false;
     bool cellDataWasSet = false;
     bool EOFReached = false;
+    bool struct_out_found = false;
     char buffer[BUFF_SIZE];
     double x,y,z,a,b,c,alpha,beta,gamma;
     double latticeConstant = 1.0;
@@ -91,9 +92,112 @@ namespace OpenBabel {
     int atomicNum, numAtoms, numSpecies;
     matrix3x3 cellMatrix;
     OBUnitCell *cell = new OBUnitCell();
-
     pmol->BeginModify();
 
+    // We're gonna try to find "<name>.STRUCT_OUT"
+    // If we find it and read it, we will skip all the reading steps
+    string filePath = pConv->GetInFilename();
+    if (filePath.empty()) {
+      cout << "Invalid path specified for siesta output file.\n";
+      delete cell;
+      return false;
+    }
+
+    size_t found;
+    found = filePath.rfind("/");
+    string path = filePath.substr(0, found) + "/";
+    if (found == string::npos) path = "./";
+    string fileName = filePath.substr(found + 1, filePath.size());
+
+    // We want to chop off the last four characters: ".out"
+    fileName.erase(fileName.size() - 4, fileName.size() - 1);
+
+    string struct_name = path + fileName + ".STRUCT_OUT";
+
+    ifstream ifs_struct_out (struct_name.c_str());
+    if (ifs_struct_out) struct_out_found = true;
+    // We'll try to look in the "work" directory in case the user put
+    // the output files there (as is done in the siesta tests)
+    // We may need to add more directories in which to search in the future.
+    else {
+      ifs_struct_out.close();
+      struct_name = path + "work/" + fileName + ".STRUCT_OUT";
+
+      ifs_struct_out.open(struct_name.c_str());
+      if (ifs_struct_out) struct_out_found = true;
+      // If this failed, we'll just look for the coordinates in the .out file
+      else ifs_struct_out.close();
+    }
+
+    // Send a message to the user if the .STRUCT_OUT was not found
+    if (!struct_out_found) cout << "Could not find " << fileName <<
+                                   ".STRUCT_OUT\nAttempting to read " <<
+                                   "coordinates from " << fileName << ".out " <<
+                                   "instead.\n."
+
+    // Read the .STRUCT_OUT file if it was found
+    else if (struct_out_found) {
+      // First three lines are cell vectors
+      // They are in Angstroms by default
+      for (size_t i = 0; i < 3; i++) {
+          ifs_struct_out.getline(buffer, BUFF_SIZE);
+          tokenize(vs, buffer);
+          for (size_t j = 0; j < 3; j++) {
+            cellMatrix(i,j) = atof(vs.at(j).c_str());
+          }
+        }
+
+      // Build unit cell
+      cell->SetData(cellMatrix);
+      cellDataWasSet = true;
+
+      // .STRUCT_OUT gives fractional coordinates for atom positions
+      coordsAreFractional = true;
+
+      // Get number of atoms
+      ifs_struct_out.getline(buffer, BUFF_SIZE);
+      tokenize(vs, buffer);
+      numAtoms = atoi(vs.at(0).c_str());
+
+      // Clear old atoms from pmol in case they were set for some reason
+      vector<OBAtom*> toDelete;
+      FOR_ATOMS_OF_MOL(a, *pmol)
+        toDelete.push_back(&*a);
+      for (size_t i = 0; i < toDelete.size(); i++)
+        pmol->DeleteAtom(toDelete.at(i));
+
+      // Store atom info
+      int atomsIterated = 0;
+      while (atomsIterated < numAtoms &&
+             ifs_struct_out.getline(buffer, BUFF_SIZE)) {
+        tokenize(vs, buffer);
+
+        // save atomic number
+        atomicNum = atoi(vs.at(1).c_str());
+
+        x = atof(vs.at(2).c_str());
+        y = atof(vs.at(3).c_str());
+        z = atof(vs.at(4).c_str());
+
+        // Add atom
+        OBAtom *atom = pmol->NewAtom();
+        atom->SetAtomicNum(atomicNum);
+        vector3 coords (x,y,z);
+        atom->SetVector(coords);
+
+        // Reset vars
+        atomsIterated++;
+      }
+      if (atomsIterated != numAtoms) {
+        cout << "Error reading the .STRUCT_OUT file. Make sure it was " <<
+                "saved correctly\n";
+        delete cell;
+        return false;
+      }
+    } // Done reading .STRUCT_OUT !
+
+    // Will attempt to read coordinates from the .out file if the .STRUCT_OUT
+    // file was not found.
     while (ifs.getline(buffer, BUFF_SIZE)) {
 /*
       // These are currently unused, but may be used in the future...
@@ -119,14 +223,15 @@ namespace OpenBabel {
       }
 
       // Input coordinates are fractional!
-      if (strstr(buffer, "AtomicCoordinatesFormat")) {
+      if (strstr(buffer, "AtomicCoordinatesFormat") && !struct_out_found) {
         if (strstr(buffer, "Fractional")) coordsAreFractional = true;
       }
 
       // Input atom info
       // This will be overwritten by the output atom info if the output atom
       // info exists (i.e., if a relaxation was performed).
-      if (strstr(buffer, "%block AtomicCoordinatesAndAtomicSpecies")) {
+      if (strstr(buffer, "%block AtomicCoordinatesAndAtomicSpecies") &&
+          !struct_out_found) {
 
         // Clear old atoms from pmol in case they were set for some reason
         vector<OBAtom*> toDelete;
@@ -171,7 +276,8 @@ namespace OpenBabel {
 
       // Output atom info
       // This will overwrite the input atom info
-      if (strstr(buffer, "outcoor: Relaxed atomic coordinates")) {
+      if (strstr(buffer, "outcoor: Relaxed atomic coordinates") &&
+          !struct_out_found) {
         // Check to see if they are fractional coordinates
         coordsAreFractional = false;
 
@@ -210,7 +316,7 @@ namespace OpenBabel {
       }
 
       // Lattice constant for the input lattice parameters
-      if (strstr(buffer, "LatticeConstant")) {
+      if (strstr(buffer, "LatticeConstant") && !struct_out_found) {
         tokenize(vs, buffer);
         latticeConstant = atof(vs.at(1).c_str());
 
@@ -221,7 +327,7 @@ namespace OpenBabel {
       // input lattice parameters. This will be overwritten if there are
       // relaxed output lattice parameters elsewhere in the file
       // (i.e., if a cell relaxation was performed...)
-      if (strstr(buffer, "%block LatticeParameters")) {
+      if (strstr(buffer, "%block LatticeParameters") && !struct_out_found) {
         ifs.getline(buffer, BUFF_SIZE);
         tokenize(vs, buffer);
         a = atof(vs.at(0).c_str()) * latticeConstant;
@@ -241,7 +347,7 @@ namespace OpenBabel {
       // before the final one is given. Perhaps we should come up with a way
       // to identify the final one so this code block doesn't get called over
       // and over again?
-      if (strstr(buffer, "outcell: Unit cell vectors")) {
+      if (strstr(buffer, "outcell: Unit cell vectors") && !struct_out_found) {
         for (size_t i = 0; i < 3; i++) {
           ifs.getline(buffer, BUFF_SIZE);
           tokenize(vs, buffer);
@@ -286,8 +392,6 @@ namespace OpenBabel {
     }
 
     // set final unit cell
-    matrix3x3 obcell = cell->GetCellMatrix();
-
     if (cellDataWasSet) pmol->SetData(cell);
 
     pmol->EndModify();
