@@ -76,11 +76,51 @@ namespace OpenBabel {
 
     /// The "API" interface functions
     virtual bool ReadMolecule(OBBase* pOb, OBConversion* pConv);
+
+    /// Special function for reading band output
+    bool ReadBandOutput(OBMol& mol, istream& ifs);
+
+    /// Special function for reading dftb output
+    bool ReadDftbOutput(OBMol& mol, istream& ifs);
   };
   //***
 
   //Make an instance of the format class
   ADFOutputFormat theADFOutputFormat;
+
+  bool ADFOutputFormat::ReadBandOutput(OBMol& mol, istream& ifs)
+  {
+    char buffer[BUFF_SIZE];
+
+    mol.Clear();
+    mol.BeginModify();
+
+    while	(ifs.getline(buffer, BUFF_SIZE)) {
+      if (strstr(buffer,
+                 "G E O M E T R Y    I N    X - Y - Z    F O R M A T")) {
+
+      }
+      else if (strstr(buffer, "E N E R G Y   A N A L Y S I S")) {
+
+      }
+    }
+
+    return true;
+  }
+
+  bool ADFOutputFormat::ReadDftbOutput(OBMol& mol, istream& ifs)
+  {
+    char buffer[BUFF_SIZE];
+
+    mol.Clear();
+    mol.BeginModify();
+
+    while	(ifs.getline(buffer, BUFF_SIZE)) {
+
+    }
+
+    return true;
+  }
 
   /////////////////////////////////////////////////////////////////
   bool ADFOutputFormat::ReadMolecule(OBBase* pOb, OBConversion* pConv)
@@ -109,7 +149,23 @@ namespace OpenBabel {
 
     while	(ifs.getline(buffer,BUFF_SIZE))
       {
-        if(strstr(buffer,"Coordinates (Cartesian)") != NULL)
+        if (strstr(buffer, "|     B A N D     |")) {
+          // We must be reading BAND output. Run the appropriate function.
+          if (!ReadBandOutput(mol, ifs)) {
+            mol.EndModify();
+            return false;
+          }
+          break;
+        }
+        else if (strstr(buffer, "|     D F T B     |")) {
+          // We must be reading DFTB output. Run the appropriate function.
+          if (!ReadDftbOutput(mol, ifs)) {
+            mol.EndModify();
+            return false;
+          }
+          break;
+        }
+        else if(strstr(buffer,"Coordinates (Cartesian)") != NULL)
           {
             mol.Clear();
             mol.BeginModify();
