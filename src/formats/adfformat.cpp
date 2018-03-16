@@ -1,5 +1,6 @@
 //
 // Copyright (C) 2010 David C. Lonie
+// Copyright (C) 2018 Patrick Avery
 //
 // Molekel - Molecular Visualization Program
 // Copyright (C) 2006, 2007 Swiss National Supercomputing Centre (CSCS)
@@ -76,51 +77,11 @@ namespace OpenBabel {
 
     /// The "API" interface functions
     virtual bool ReadMolecule(OBBase* pOb, OBConversion* pConv);
-
-    /// Special function for reading band output
-    bool ReadBandOutput(OBMol& mol, istream& ifs);
-
-    /// Special function for reading dftb output
-    bool ReadDftbOutput(OBMol& mol, istream& ifs);
   };
   //***
 
   //Make an instance of the format class
   ADFOutputFormat theADFOutputFormat;
-
-  bool ADFOutputFormat::ReadBandOutput(OBMol& mol, istream& ifs)
-  {
-    char buffer[BUFF_SIZE];
-
-    mol.Clear();
-    mol.BeginModify();
-
-    while	(ifs.getline(buffer, BUFF_SIZE)) {
-      if (strstr(buffer,
-                 "G E O M E T R Y    I N    X - Y - Z    F O R M A T")) {
-
-      }
-      else if (strstr(buffer, "E N E R G Y   A N A L Y S I S")) {
-
-      }
-    }
-
-    return true;
-  }
-
-  bool ADFOutputFormat::ReadDftbOutput(OBMol& mol, istream& ifs)
-  {
-    char buffer[BUFF_SIZE];
-
-    mol.Clear();
-    mol.BeginModify();
-
-    while	(ifs.getline(buffer, BUFF_SIZE)) {
-
-    }
-
-    return true;
-  }
 
   /////////////////////////////////////////////////////////////////
   bool ADFOutputFormat::ReadMolecule(OBBase* pOb, OBConversion* pConv)
@@ -149,23 +110,7 @@ namespace OpenBabel {
 
     while	(ifs.getline(buffer,BUFF_SIZE))
       {
-        if (strstr(buffer, "|     B A N D     |")) {
-          // We must be reading BAND output. Run the appropriate function.
-          if (!ReadBandOutput(mol, ifs)) {
-            mol.EndModify();
-            return false;
-          }
-          break;
-        }
-        else if (strstr(buffer, "|     D F T B     |")) {
-          // We must be reading DFTB output. Run the appropriate function.
-          if (!ReadDftbOutput(mol, ifs)) {
-            mol.EndModify();
-            return false;
-          }
-          break;
-        }
-        else if(strstr(buffer,"Coordinates (Cartesian)") != NULL)
+        if(strstr(buffer,"Coordinates (Cartesian)") != NULL)
           {
             mol.Clear();
             mol.BeginModify();
@@ -407,6 +352,141 @@ namespace OpenBabel {
 
     ofs << endl; // one final blank line
 
+    return true;
+  }
+
+  class ADFBandFormat : public OBMoleculeFormat
+  {
+  public:
+    //Register this format type ID
+    ADFBandFormat()
+    {
+      OBConversion::RegisterFormat("adfband",this);
+    }
+
+    virtual const char* Description() //required
+    {
+      return "ADF Band output format\n";
+    };
+
+    virtual const char* SpecificationURL()
+    {return "https://www.scm.com/product/band_periodicdft/";}; //optional
+
+    //Flags() can return be any the following combined by | or be omitted if none apply
+    // NOTREADABLE  READONEONLY  NOTWRITABLE  WRITEONEONLY
+    virtual unsigned int Flags()
+    {
+      return READONEONLY | NOTWRITABLE;
+    };
+
+    /// The "API" interface functions
+    virtual bool ReadMolecule(OBBase* pOb, OBConversion* pConv);
+  };
+  //***
+
+  //Make an instance of the format class
+  ADFBandFormat theADFBandFormat;
+
+  /////////////////////////////////////////////////////////////////
+  bool ADFBandFormat::ReadMolecule(OBBase* pOb, OBConversion* pConv)
+  {
+    OBMol* pmol = pOb->CastAndClear<OBMol>();
+    if (!pmol)
+      return false;
+
+    //Define some references so we can use the old parameter names
+    istream &ifs = *pConv->GetInStream();
+    OBMol &mol = *pmol;
+    const char* title = pConv->GetTitle();
+
+    char buffer[BUFF_SIZE];
+    vector<string> vs;
+
+    // This will remain as 1.0 if we have units of Angstroms
+    double lengthConversion = 1.0;
+
+    mol.BeginModify();
+
+    while (ifs.getline(buffer, BUFF_SIZE)) {
+      if (strstr(buffer, "length Bohr") || strstr(buffer, "length BOHR") ||
+          strstr(buffer, "length bohr")) {
+        // We have units of Bohr!
+        lengthConversion = BOHR_TO_ANGSTROM;
+      }
+      else if (strstr(buffer,
+                      "G E O M E T R Y    I N    X - Y - Z    F O R M A T")) {
+        // We need to clear the atoms before proceeding. Since this comes
+        // before all the other data, we can just clear the whole molecule
+        mol.Clear();
+        mol.BeginModify();
+
+        ifs.getline(buffer, BUFF_SIZE); // ===========
+        ifs.getline(buffer, BUFF_SIZE); // *blank line*
+        while (ifs.getline(buffer, BUFF_SIZE)) {
+          tokenize(vs, buffer);
+          if (vs.size() < 4 || vs[0] == "VEC1")
+            break;
+
+          OBAtom* atom = mol.NewAtom();
+          atom->SetAtomicNum(OBElements::GetAtomicNum(vs[0].c_str()));
+          double x = atof(vs[1].c_str()) * lengthConversion;
+          double y = atof(vs[2].c_str()) * lengthConversion;
+          double z = atof(vs[3].c_str()) * lengthConversion;
+          atom->SetVector(x, y, z);
+        }
+      }
+      else if (strstr(buffer, "REAL SPACE LATTICE VECTORS")) {
+        ifs.getline(buffer, BUFF_SIZE); // ------------
+
+        std::vector<vector3> vectors;
+        for (int i = 0; i < 3; ++i) {
+          ifs.getline(buffer, BUFF_SIZE);
+          tokenize(vs, buffer);
+          if (vs.size() < 5)
+            break;
+
+          // These are in Bohrs
+          double x = atof(vs[1].c_str()) * BOHR_TO_ANGSTROM;
+          double y = atof(vs[2].c_str()) * BOHR_TO_ANGSTROM;
+          double z = atof(vs[3].c_str()) * BOHR_TO_ANGSTROM;
+          vectors.push_back(vector3(x, y, z));
+        }
+
+        if (vectors.size() == 3) {
+          // Build unit cell
+          OBUnitCell* cell = new OBUnitCell;
+          cell->SetData(vectors[0], vectors[1], vectors[2]);
+          cell->SetSpaceGroup(1);
+          pmol->SetData(cell);
+        }
+      }
+      else if (strstr(buffer, "E N E R G Y   A N A L Y S I S")) {
+        // Final bond energy line looks like this:
+        //  Final bond energy (LDA)                                      -1.09942745     -29.9169     -689.90
+        while (ifs.getline(buffer, BUFF_SIZE)) {
+          if (strstr(buffer, "Final bond energy")) {
+            tokenize(vs, buffer);
+
+            // Line should be of size 7
+            if (vs.size() != 7)
+              break;
+
+            // Units of the final column should be in kcal/mol
+            mol.SetEnergy(atof(vs[6].c_str()));
+            break;
+          }
+        }
+      }
+    }
+
+    if (mol.NumAtoms() == 0) { // e.g., if we're at the end of a file
+      mol.EndModify();
+      return false;
+    }
+
+    mol.EndModify();
+
+    mol.SetTitle(title);
     return true;
   }
 
